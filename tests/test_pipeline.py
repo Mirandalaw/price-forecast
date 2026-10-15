@@ -99,3 +99,45 @@ def test_news_features_attach_and_backtest_with_news(prices):
     assert feat[feat.item == "양파"][N.NEWS_FEATS].drop(columns=["mc_fx_7d", "mc_oil_7d"]).abs().sum().sum() == 0
     res = backtest.run(prices, years=(2024,), horizons=(3,), signals=sig)
     assert {"lgbm_news", "blend_news"} <= set(res.model)
+
+
+# ---------------------------------------------------------------------------
+# 순별 타깃 · 제출용 예측
+# ---------------------------------------------------------------------------
+from price_forecast import predict, sun  # noqa: E402
+
+
+def test_sun_targets_match_sun_mean(prices):
+    feat = F.build(prices)
+    g = feat[feat.item == "무"].set_index("date")
+    t = pd.Timestamp("2022-10-05")                      # 10월 상순 → s2 = 10월 하순, s3 = 11월 상순
+    p = prices[prices.item == "무"].set_index("date")["price"]
+    exp_s2 = p["2022-10-21":"2022-10-31"].mean()
+    exp_s3 = p["2022-11-01":"2022-11-10"].mean()
+    assert np.isclose(g.loc[t, "ps2"], exp_s2) and np.isclose(g.loc[t, "ps3"], exp_s3)
+    assert np.isclose(g.loc[t, "ys2"], np.log(exp_s2) - np.log(g.loc[t, "price"]))
+    assert sun.target_label(t, "s2") == "2022-10 하순" and sun.target_label(t, "s3") == "2022-11 상순"
+
+
+def test_backtest_includes_sun_horizons(prices):
+    res = backtest.run(prices, years=(2023,), horizons=[1, "s2"])
+    assert set(res["h"].astype(str)) == {"1", "s2"}
+    assert "select" in set(backtest.add_selection(res)["model"])
+
+
+def test_forecast_complete_and_uses_only_past(prices):
+    fc = predict.forecast(prices, "2023-10-26", horizons=[1, 10, "s2", "s3"])
+    assert len(fc) == 5 * 4 and fc["pred_price"].notna().all() and (fc["pred_price"] > 0).all()
+    assert set(fc["target"][fc.horizon == "s2"]) == {"2023-11 중순"}
+    # 기준가는 2023-10-26 이하 마지막 거래일 가격이어야 한다
+    last = prices[(prices.item == "배추") & (prices.date <= "2023-10-26")].sort_values("date").iloc[-1]
+    assert np.isclose(fc[(fc.item == "배추")]["base_price"].iloc[0], round(last.price, 1))
+
+
+def test_forecast_falls_back_to_persistence(prices, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("lightgbm down")
+    monkeypatch.setattr(M, "predict_all", boom)
+    fc = predict.forecast(prices, "2023-10-26", horizons=[3, "s2"])
+    assert (fc["model"] == "persist(fallback)").all()
+    assert np.allclose(fc["pred_price"], fc["base_price"])
