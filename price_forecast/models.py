@@ -9,17 +9,25 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 
-FEATS = ["lag_ret1", "lag_ret2", "lag_ret3", "lag_ret5", "lag_ret7", "lag_ret14",
-         "ma7_gap", "ma28_gap", "vol14", "dow", "doy", "sun_gap", "normal_gap", "ly_gap", "drift"]
+from .news import NEWS_FEATS
+
+PRICE_FEATS = ["lag_ret1", "lag_ret2", "lag_ret3", "lag_ret5", "lag_ret7", "lag_ret14",
+               "ma7_gap", "ma28_gap", "vol14", "dow", "doy", "sun_gap", "normal_gap", "ly_gap", "drift"]
+FEATS = PRICE_FEATS  # 기본(뉴스 off). use_news=True 면 PRICE_FEATS + NEWS_FEATS
 PARAMS = dict(objective="l1", learning_rate=0.03, num_leaves=15, min_data_in_leaf=40,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0, verbose=-1, seed=7)
 
 
-def fit_lgbm(train: pd.DataFrame, h: int) -> lgb.Booster:
-    t = train.dropna(subset=FEATS + [f"y{h}", f"p{h}"])
+def feats(use_news: bool) -> list[str]:
+    return PRICE_FEATS + NEWS_FEATS if use_news else PRICE_FEATS
+
+
+def fit_lgbm(train: pd.DataFrame, h: int, use_news: bool = False) -> lgb.Booster:
+    F_ = feats(use_news)
+    t = train.dropna(subset=PRICE_FEATS + [f"y{h}", f"p{h}"])
     w = 1.0 / t[f"p{h}"].clip(lower=1)          # MAPE 가중: 실제가격이 낮을수록 오차가 비싸다
     w = w / w.mean()
-    ds = lgb.Dataset(t[FEATS], t[f"y{h}"], weight=w, categorical_feature=["dow"])
+    ds = lgb.Dataset(t[F_].fillna(0), t[f"y{h}"], weight=w, categorical_feature=["dow"])
     return lgb.train(PARAMS, ds, num_boost_round=400)
 
 
@@ -29,14 +37,15 @@ def clip_by_item(yhat: pd.Series, train: pd.DataFrame, h: int) -> pd.Series:
     return yhat  # 호출부에서 품목별로 적용
 
 
-def predict_all(train: pd.DataFrame, test: pd.DataFrame, h: int, w_lgbm: float = 0.6) -> pd.DataFrame:
+def predict_all(train: pd.DataFrame, test: pd.DataFrame, h: int, w_lgbm: float = 0.6,
+                use_news: bool = False) -> pd.DataFrame:
     """test 행마다 persistence / drift / lgbm / blend 의 ŷ_h 를 돌려준다."""
     out = test[["item", "date", "price", f"p{h}", f"y{h}", "drift"]].copy()
     out["persist"] = 0.0
     out["drift_m"] = out["drift"].fillna(0.0)
-    m = fit_lgbm(train, h)
-    x = test[FEATS].copy()
-    out["lgbm"] = np.where(x.isna().any(axis=1), out["drift_m"], m.predict(x.fillna(0)))
+    m = fit_lgbm(train, h, use_news)
+    x = test[feats(use_news)].copy()
+    out["lgbm"] = np.where(x[PRICE_FEATS].isna().any(axis=1), out["drift_m"], m.predict(x.fillna(0)))
     shrink = 1 - 0.04 * (h - 1)                  # h=1 → 1.0, h=10 → 0.64 : 멀수록 drift로 수축
     out["blend"] = (w_lgbm * shrink) * out["lgbm"] + (1 - w_lgbm * shrink) * out["drift_m"]
     lo = train.groupby("item")[f"y{h}"].quantile(0.01); hi = train.groupby("item")[f"y{h}"].quantile(0.99)

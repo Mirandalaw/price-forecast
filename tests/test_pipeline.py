@@ -79,3 +79,23 @@ def test_loader_garlic_filter(tmp_path):
     df = loader.load_at5([p])
     assert set(df.item) == {"깐마늘", "배추"}
     assert (df[df.item == "깐마늘"].price > 6000).all()
+
+
+def test_news_features_attach_and_backtest_with_news(prices):
+    from price_forecast import news as N
+    # 합성 신호: 배추에 2024-10-28 비축 방출(−), 2024-11-02 폭우(+)
+    sig = pd.DataFrame([
+        dict(date=pd.Timestamp("2024-10-28"), item="배추", news_cnt=3, event_cnt=1, dir_sum=-1, dir_wsum=-1.25,
+             evt_agri_reserve_release=1, mag_ton=10000, macro_fx_up=0, macro_oil_up=0),
+        dict(date=pd.Timestamp("2024-11-02"), item="배추", news_cnt=2, event_cnt=1, dir_sum=1, dir_wsum=0.5,
+             evt_agri_heavy_rain=1, mag_ton=0, macro_fx_up=1, macro_oil_up=0),
+    ]).fillna(0)
+    feat = N.attach(F.build(prices), sig)
+    assert set(N.NEWS_FEATS) <= set(feat.columns)
+    row = feat[(feat.item == "배추") & (feat.date == "2024-10-28")].iloc[0]
+    assert row.nw_dir == -1 and row.nw_release == 1
+    later = feat[(feat.item == "배추") & (feat.date == "2024-11-01")].iloc[0]
+    assert later.nw_release == 1 and later.nw_wdir_7d == -1.25      # 7일 롤링에 남아 있음
+    assert feat[feat.item == "양파"][N.NEWS_FEATS].drop(columns=["mc_fx_7d", "mc_oil_7d"]).abs().sum().sum() == 0
+    res = backtest.run(prices, years=(2024,), horizons=(3,), signals=sig)
+    assert {"lgbm_news", "blend_news"} <= set(res.model)

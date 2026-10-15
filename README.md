@@ -20,9 +20,20 @@ python scripts/run_backtest.py        # 2021~2024 본선 동기간(10/26~11/09) 
 ## 첫 결과 (10일 앞, 5품목 평균 MAPE)
 persistence 9.5 → LightGBM 9.0. 배추·무는 19~20%로 가격 피처만으론 거의 안 줄어듦 → 반입량·뉴스 사건·재배면적 피처가 필요한 구간.
 
+## 뉴스 피처 (news_collector 연동)
+```bash
+# news_collector 에서
+python scripts/run_agri_signals.py --from-snapshots snapshots/ --out agri_signals.csv
+cp agri_signals.csv ../price-forecast/data/
+# price-forecast 에서 — 파일이 있으면 lgbm_news / blend_news 가 리포트에 추가됨 (뉴스 on/off 비교)
+python scripts/run_backtest.py
+```
+`price_forecast/news.py`: 당일·3일·7일 롤링 방향 합, 사건군별 7일 카운트, news_shock(60일 90분위), 거시 7일.
+과거 뉴스가 없으면 전부 0 → 가격 모델과 동일.
+
 ## 다음
 1. 2025년 파일 추가 → 2025 fold
-2. 반입량 피처 (본선 데이터셋 또는 가락시장)
-3. 뉴스 사건 피처 (news_collector agri 패치 + KREI 월보 소급 라벨)
+2. 2024·2025 가을 뉴스 소급(KREI 월보·보도자료) → `agri_signals.csv` → 뉴스 on/off 실측
+3. 반입량 피처 (본선 데이터셋 또는 가락시장)
 4. 순별(2순·3순 후) 모델: p_sun 기준 유사사례 + 면적·수입
 5. 회차 제출 파일 생성 + fallback
