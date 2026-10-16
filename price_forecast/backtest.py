@@ -23,6 +23,10 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
             if use_news:
                 pn = M.predict_all(train, test, h, use_news=True)
                 pr["lgbm_news"], pr["blend_news"] = pn["lgbm"], pn["blend"]
+                tab = N.event_study(prices, signals, cut - gap, [h])
+                adj = N.event_adjustment(test, signals, tab, h)
+                lo = train.groupby("item")[f"y{h}"].quantile(0.01); hi = train.groupby("item")[f"y{h}"].quantile(0.99)
+                pr["blend_evt"] = [float(np.clip(b + a, lo[it], hi[it])) for b, a, it in zip(pr["blend"], adj, pr["item"])]
             for mdl in [c for c in CANDIDATES if c in pr]:
                 pred_price = pr["price"] * np.exp(pr[mdl])
                 ape = (pred_price - pr[f"p{h}"]).abs() / pr[f"p{h}"]
@@ -31,7 +35,7 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
     return pd.DataFrame(rows)
 
 
-CANDIDATES = ("persist", "drift_m", "lgbm", "blend", "lgbm_news", "blend_news")
+CANDIDATES = ("persist", "drift_m", "lgbm", "blend", "lgbm_news", "blend_news", "blend_evt")
 
 
 def add_selection(res: pd.DataFrame, min_years: int = 1) -> pd.DataFrame:
