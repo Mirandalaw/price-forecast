@@ -1,4 +1,5 @@
 """예측 모델 3종. 모두 '로그변화율 ŷ_h'를 내고, 가격은 P(t)·exp(ŷ_h).
+h 는 1..10 (거래일 앞) 또는 "s2"/"s3" (2순·3순 후 순 평균) — 열 이름 규칙 y{h}/p{h} 가 같아서 코드가 공유된다.
 
 persistence : ŷ = 0
 drift       : ŷ = seasonal_drift (과거 연도 같은 시기 평균 변화율)
@@ -22,7 +23,12 @@ def feats(use_news: bool) -> list[str]:
     return PRICE_FEATS + NEWS_FEATS if use_news else PRICE_FEATS
 
 
-def fit_lgbm(train: pd.DataFrame, h: int, use_news: bool = False) -> lgb.Booster:
+def shrink(h) -> float:
+    """h가 멀수록 lgbm 비중을 drift 쪽으로 수축. 일별 h=1→1.0, h=10→0.64 / 순별 2순·3순 후→0.5."""
+    return 0.5 if isinstance(h, str) else 1 - 0.04 * (h - 1)
+
+
+def fit_lgbm(train: pd.DataFrame, h, use_news: bool = False) -> lgb.Booster:
     F_ = feats(use_news)
     t = train.dropna(subset=PRICE_FEATS + [f"y{h}", f"p{h}"])
     w = 1.0 / t[f"p{h}"].clip(lower=1)          # MAPE 가중: 실제가격이 낮을수록 오차가 비싸다
@@ -31,13 +37,7 @@ def fit_lgbm(train: pd.DataFrame, h: int, use_news: bool = False) -> lgb.Booster
     return lgb.train(PARAMS, ds, num_boost_round=400)
 
 
-def clip_by_item(yhat: pd.Series, train: pd.DataFrame, h: int) -> pd.Series:
-    lo = train.groupby("item")[f"y{h}"].quantile(0.01); hi = train.groupby("item")[f"y{h}"].quantile(0.99)
-    items = yhat.index.get_level_values("item") if isinstance(yhat.index, pd.MultiIndex) else None
-    return yhat  # 호출부에서 품목별로 적용
-
-
-def predict_all(train: pd.DataFrame, test: pd.DataFrame, h: int, w_lgbm: float = 0.6,
+def predict_all(train: pd.DataFrame, test: pd.DataFrame, h, w_lgbm: float = 0.6,
                 use_news: bool = False) -> pd.DataFrame:
     """test 행마다 persistence / drift / lgbm / blend 의 ŷ_h 를 돌려준다."""
     out = test[["item", "date", "price", f"p{h}", f"y{h}", "drift"]].copy()
@@ -46,8 +46,8 @@ def predict_all(train: pd.DataFrame, test: pd.DataFrame, h: int, w_lgbm: float =
     m = fit_lgbm(train, h, use_news)
     x = test[feats(use_news)].copy()
     out["lgbm"] = np.where(x[PRICE_FEATS].isna().any(axis=1), out["drift_m"], m.predict(x.fillna(0)))
-    shrink = 1 - 0.04 * (h - 1)                  # h=1 → 1.0, h=10 → 0.64 : 멀수록 drift로 수축
-    out["blend"] = (w_lgbm * shrink) * out["lgbm"] + (1 - w_lgbm * shrink) * out["drift_m"]
+    sh = shrink(h)
+    out["blend"] = (w_lgbm * sh) * out["lgbm"] + (1 - w_lgbm * sh) * out["drift_m"]
     lo = train.groupby("item")[f"y{h}"].quantile(0.01); hi = train.groupby("item")[f"y{h}"].quantile(0.99)
     out["blend"] = out.apply(lambda r: float(np.clip(r["blend"], lo[r["item"]], hi[r["item"]])), axis=1)
     return out

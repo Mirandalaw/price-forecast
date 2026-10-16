@@ -5,7 +5,10 @@ seasonal_drift: 같은 달력 구간에서 과거 연도들의 h일 뒤 로그�
 import numpy as np
 import pandas as pd
 
+from . import sun
+
 HORIZONS = list(range(1, 11))
+ALL_HORIZONS = HORIZONS + sun.SUN_HORIZONS
 
 
 def _per_item(g: pd.DataFrame) -> pd.DataFrame:
@@ -28,14 +31,14 @@ def _per_item(g: pd.DataFrame) -> pd.DataFrame:
     for h in HORIZONS:                                # 타깃: h거래일 뒤 로그변화율
         g[f"y{h}"] = g["logp"].shift(-h) - g["logp"]
         g[f"p{h}"] = p.shift(-h)
-    return g
+    return sun.add_targets(g)                     # ys2/ys3, ps2/ps3 (순별 타깃)
 
 
 def build(prices: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([_per_item(g) for _, g in prices.groupby("item")], ignore_index=True)
 
 
-def seasonal_drift(feat: pd.DataFrame, h: int, window: int = 7, min_n: int = 5) -> pd.Series:
+def seasonal_drift(feat: pd.DataFrame, h, window: int = 7, min_n: int = 5) -> pd.Series:
     """각 행에 대해: 다른 연도들에서 doy±window 안의 y{h} 평균 (leave-one-year-out).
 
     연도×일(1..366) 격자에 y를 놓고 window 합을 구한 뒤, 전체 합에서 자기 연도분을 뺀다.
