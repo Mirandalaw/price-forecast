@@ -7,3 +7,4 @@ data/raw/
 snapshots/
 *.parquet
 output/*.txt
+data/raw_weather/

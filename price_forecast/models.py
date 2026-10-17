@@ -11,6 +11,7 @@ import pandas as pd
 import lightgbm as lgb
 
 from .news import NEWS_FEATS
+from .weather import WX_FEATS
 
 PRICE_FEATS = ["lag_ret1", "lag_ret2", "lag_ret3", "lag_ret5", "lag_ret7", "lag_ret14",
                "ma7_gap", "ma28_gap", "vol14", "dow", "doy", "sun_gap", "normal_gap", "ly_gap", "drift"]
@@ -19,8 +20,16 @@ PARAMS = dict(objective="l1", learning_rate=0.03, num_leaves=15, min_data_in_lea
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0, verbose=-1, seed=7)
 
 
-def feats(use_news: bool) -> list[str]:
-    return PRICE_FEATS + NEWS_FEATS if use_news else PRICE_FEATS
+def feats(use_news: bool, use_wx: bool = False) -> list[str]:
+    return PRICE_FEATS + (NEWS_FEATS if use_news else []) + (WX_FEATS if use_wx else [])
+
+
+def _x(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """가격·뉴스 피처의 결측은 0, 날씨 결측은 NaN 그대로 (LightGBM 이 결측 분기를 학습)."""
+    x = df[cols].copy()
+    fill = [c for c in cols if c not in WX_FEATS]
+    x[fill] = x[fill].fillna(0)
+    return x
 
 
 def shrink(h) -> float:
@@ -28,24 +37,24 @@ def shrink(h) -> float:
     return 0.5 if isinstance(h, str) else 1 - 0.04 * (h - 1)
 
 
-def fit_lgbm(train: pd.DataFrame, h, use_news: bool = False) -> lgb.Booster:
-    F_ = feats(use_news)
+def fit_lgbm(train: pd.DataFrame, h, use_news: bool = False, use_wx: bool = False) -> lgb.Booster:
+    F_ = feats(use_news, use_wx)
     t = train.dropna(subset=PRICE_FEATS + [f"y{h}", f"p{h}"])
     w = 1.0 / t[f"p{h}"].clip(lower=1)          # MAPE 가중: 실제가격이 낮을수록 오차가 비싸다
     w = w / w.mean()
-    ds = lgb.Dataset(t[F_].fillna(0), t[f"y{h}"], weight=w, categorical_feature=["dow"])
+    ds = lgb.Dataset(_x(t, F_), t[f"y{h}"], weight=w, categorical_feature=["dow"])
     return lgb.train(PARAMS, ds, num_boost_round=400)
 
 
 def predict_all(train: pd.DataFrame, test: pd.DataFrame, h, w_lgbm: float = 0.6,
-                use_news: bool = False) -> pd.DataFrame:
+                use_news: bool = False, use_wx: bool = False) -> pd.DataFrame:
     """test 행마다 persistence / drift / lgbm / blend 의 ŷ_h 를 돌려준다."""
     out = test[["item", "date", "price", f"p{h}", f"y{h}", "drift"]].copy()
     out["persist"] = 0.0
     out["drift_m"] = out["drift"].fillna(0.0)
-    m = fit_lgbm(train, h, use_news)
-    x = test[feats(use_news)].copy()
-    out["lgbm"] = np.where(x[PRICE_FEATS].isna().any(axis=1), out["drift_m"], m.predict(x.fillna(0)))
+    m = fit_lgbm(train, h, use_news, use_wx)
+    cols = feats(use_news, use_wx)
+    out["lgbm"] = np.where(test[PRICE_FEATS].isna().any(axis=1), out["drift_m"], m.predict(_x(test, cols)))
     sh = shrink(h)
     out["blend"] = (w_lgbm * sh) * out["lgbm"] + (1 - w_lgbm * sh) * out["drift_m"]
     lo = train.groupby("item")[f"y{h}"].quantile(0.01); hi = train.groupby("item")[f"y{h}"].quantile(0.99)
