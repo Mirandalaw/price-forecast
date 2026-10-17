@@ -14,10 +14,14 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import features as F, models as M, news as N, sun
+from . import features as F, models as M, news as N, sun, weather as W
 
 log = logging.getLogger(__name__)
 DEFAULT_MODEL = "blend"
+# model="auto": 품목별 모델 (2021~2024 백테스트 근거, README '품목별 운용')
+#   배추·무 = 날씨 피처 LightGBM (10일 앞 무 19.9→18.3%) / 저장품 = 기준가 유지 (모델이 오히려 악화)
+#   날씨 자료가 없으면 배추·무는 blend 로 내려간다.
+ITEM_MODEL = {"배추": "lgbm_wx", "무": "lgbm_wx", "양파": "persist", "깐마늘": "persist", "건고추": "persist"}
 
 
 def _target_date(asof: pd.Timestamp, h: int) -> pd.Timestamp:
@@ -32,13 +36,19 @@ def _target_date(asof: pd.Timestamp, h: int) -> pd.Timestamp:
 
 
 def forecast(prices: pd.DataFrame, asof: str | pd.Timestamp, signals: pd.DataFrame | None = None,
-             model: str = DEFAULT_MODEL, horizons=F.ALL_HORIZONS) -> pd.DataFrame:
+             model: str = DEFAULT_MODEL, horizons=F.ALL_HORIZONS, weather: pd.DataFrame | None = None) -> pd.DataFrame:
     asof = pd.Timestamp(asof)
     hist = prices[prices["date"] <= asof]
     if hist.empty:
         raise ValueError(f"{asof.date()} 이전 가격 자료가 없음")
-    feat = N.attach(F.build(hist), signals)
+    wx = weather[weather["date"] <= asof] if weather is not None else None
+    feat = W.attach(N.attach(F.build(hist), signals), wx)
     use_news = signals is not None and not signals.empty and model.endswith("_news")
+    has_wx = wx is not None and not wx.empty
+    if model == "auto":
+        per_item = {i: (m if (m != "lgbm_wx" or has_wx) else "blend") for i, m in ITEM_MODEL.items()}
+    else:
+        per_item = None
     base_model = model.replace("_news", "")
     # 기준 행 = 품목별 마지막 거래일
     last_idx = feat.sort_values("date").groupby("item").tail(1).index
@@ -49,9 +59,16 @@ def forecast(prices: pd.DataFrame, asof: str | pd.Timestamp, signals: pd.DataFra
         cur = feat.loc[last_idx]
         train = feat.dropna(subset=[f"y{h}"])
         try:
-            pr = M.predict_all(train, cur, h, use_news=use_news)
-            yhat = pr.set_index("item")[base_model]
-            used = {i: model for i in yhat.index}
+            if per_item is not None:
+                pr = M.predict_all(train, cur, h).set_index("item")
+                prw = M.predict_all(train, cur, h, use_wx=True).set_index("item") if has_wx else pr
+                pick = {i: (prw["lgbm"][i] if m == "lgbm_wx" else pr[m][i]) for i, m in per_item.items() if i in pr.index}
+                yhat = pd.Series(pick)
+                used = {i: f"auto:{per_item[i]}" for i in yhat.index}
+            else:
+                pr = M.predict_all(train, cur, h, use_news=use_news)
+                yhat = pr.set_index("item")[base_model]
+                used = {i: model for i in yhat.index}
         except Exception as e:  # noqa: BLE001 — 제출 파일은 반드시 나와야 한다
             log.warning("h=%s 모델 실패 → persistence 로 대체: %s", h, e)
             yhat = pd.Series(0.0, index=last.index)

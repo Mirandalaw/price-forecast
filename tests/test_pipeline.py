@@ -222,3 +222,10 @@ def test_weather_daily_and_features(tmp_path):
     f = W.item_features(daily, ["배추", "건고추"])
     last = f[(f.item == "배추") & (f.date == "2023-10-15")].iloc[0]
     assert last.wx_rain7 == 7.0 and last.wx_frost7 == 7.0 and np.isnan(W.attach(pd.DataFrame({"item": ["무"], "date": [pd.Timestamp("2020-01-01")]}), daily)["wx_t7"].iloc[0])
+
+
+def test_forecast_auto_model_without_weather_falls_back(prices):
+    fc = predict.forecast(prices, "2023-10-26", model="auto", horizons=[5, "s2"])
+    m = dict(zip(fc["item"], fc["model"]))
+    assert m["배추"] == "auto:blend" and m["양파"] == "auto:persist"
+    assert np.allclose(fc[fc.item == "양파"]["pred_price"], fc[fc.item == "양파"]["base_price"])
