@@ -74,6 +74,7 @@ def load_kamis_market(path: str | Path = "data/kamis_market_daily.csv") -> pd.Da
     d = d[d["item"].isin(ITEMS) & (d["price"] > 0)]
     out = pd.concat([_sun_columns(g) for _, g in d.groupby("item")], ignore_index=True)
     cols = ["item", "date", "price", "p_sun", "p_prev_sun", "p_ly_sun", "p_normal_sun"]
+    cols += [c for c in out.columns if c.startswith("mk_")]          # 시장 구조 지표 (market.py)
     return out[cols].sort_values(["item", "date"]).reset_index(drop=True)
 
 

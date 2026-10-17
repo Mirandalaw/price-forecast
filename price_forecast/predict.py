@@ -14,7 +14,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import features as F, models as M, news as N, sun, weather as W
+from . import features as F, market as MK, models as M, news as N, sun, weather as W
 
 log = logging.getLogger(__name__)
 DEFAULT_MODEL = "blend"
@@ -42,7 +42,7 @@ def forecast(prices: pd.DataFrame, asof: str | pd.Timestamp, signals: pd.DataFra
     if hist.empty:
         raise ValueError(f"{asof.date()} 이전 가격 자료가 없음")
     wx = weather[weather["date"] <= asof] if weather is not None else None
-    feat = W.attach(N.attach(F.build(hist), signals), wx)
+    feat = MK.add_features(W.attach(N.attach(F.build(hist), signals), wx))
     has_news = signals is not None and not signals.empty
     use_news = has_news and model.endswith("_news")
     has_wx = wx is not None and not wx.empty

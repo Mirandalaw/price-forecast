@@ -1,7 +1,7 @@
 """워크포워드 백테스트: 연도별로 (학습 = 그 해 10/25 이전 전체, 평가 = 그 해 10/26~11/09 기준일) × h=1..10."""
 import numpy as np
 import pandas as pd
-from . import features as F, models as M, news as N, weather as W
+from . import features as F, market as MK, models as M, news as N, weather as W
 
 
 K_GRID = np.round(np.arange(0.90, 1.021, 0.01), 2)
@@ -26,9 +26,10 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
     'blend_k' = blend × 품목·h별 MAPE 수축 계수. 계수는 **앞선 평가 연도들의 out-of-sample 예측**으로만 고른다
     (첫 해는 1.0). 연도 순서대로 돌기 때문에 미래 정보가 섞이지 않는다.
     """
-    feat = W.attach(N.attach(F.build(prices), signals), weather)
+    feat = MK.add_features(W.attach(N.attach(F.build(prices), signals), weather))
     use_news = signals is not None and not signals.empty
     use_wx = weather is not None and not weather.empty
+    use_mkt = MK.available(feat)
     rows = []
     for h in horizons:
         history: dict[str, list[tuple[float, float]]] = {}   # item → [(blend 예측가, 실제가)] 앞선 연도분
@@ -57,6 +58,10 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
             if use_wx:
                 pw = M.predict_all(train, test, h, use_wx=True)
                 pr["lgbm_wx"], pr["blend_wx"] = pw["lgbm"], pw["blend"]
+            if use_mkt:
+                pr["lgbm_mkt"] = M.predict_all(train, test, h, use_mkt=True)["lgbm"]
+                if use_news:
+                    pr["lgbm_news_mkt"] = M.predict_all(train, test, h, use_news=True, use_mkt=True)["lgbm"]
             pr["k"] = pr["item"].map(lambda it: mape_shrink_factor(history.get(it, [])))
             pr["blend_k"] = pr["blend"] + np.log(pr["k"])
             for it, g in pr.groupby("item"):
@@ -69,7 +74,7 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
     return pd.DataFrame(rows)
 
 
-CANDIDATES = ("persist", "drift_m", "lgbm", "blend", "blend_k", "lgbm_news", "blend_news", "blend_evt", "lgbm_wx", "blend_wx")
+CANDIDATES = ("persist", "drift_m", "lgbm", "blend", "blend_k", "lgbm_news", "blend_news", "blend_evt", "lgbm_wx", "blend_wx", "lgbm_mkt", "lgbm_news_mkt")
 
 
 def add_selection(res: pd.DataFrame, min_years: int = 1) -> pd.DataFrame:
