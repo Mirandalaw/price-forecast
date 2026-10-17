@@ -1,6 +1,7 @@
 # data/
 
 - `at5_trading.csv`  거래일 기준 5품목 도매가격 (2019-10 ~ 2024-12). 출처: 공공데이터포털 '한국농수산식품유통공사_주요 채소류 일일가격 현황' (KAMIS 도매 조사가격). 마늘은 품종 12A9(깐마늘)만.
+- `kamis_market_daily.csv`  5품목 × 조사일(월~금) 도매 상품 kg당 전국 시장 평균, 2015-01 ~ 2025-08. 출처: 공공데이터포털 '한국농수산식품유통공사_농수축산물 일자별 도소매 가격'(시장별 KAMIS 조사가격, 연도별 CSV 16개 ≈ 1.4GB, git 제외). `scripts/build_kamis_market.py <원본 폴더>` 로 재생성. 백테스트는 `--source market` 로 선택(2017~2024 8개년 검증 가능).
 - `at5_daily.csv`    위와 같되 휴장일 포함 달력 기준 (조회일자 행 전부).
 - `backtest_results.csv`  품목·연도·h·모델별 MAPE (scripts/run_backtest.py 출력).
 - `at5_raw_*.csv`    원본 CSV. git에는 올리지 않음 — 포털에서 받아 이 이름으로 둔다.

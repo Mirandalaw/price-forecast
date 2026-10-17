@@ -8,3 +8,4 @@ snapshots/
 *.parquet
 output/*.txt
 data/raw_weather/
+data/raw_kamis_market/
