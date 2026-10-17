@@ -10,12 +10,12 @@ import argparse
 import logging
 from pathlib import Path
 
-from price_forecast import loader, news, predict, submission
+from price_forecast import loader, news, predict, submission, weather
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 ap = argparse.ArgumentParser()
 ap.add_argument("--asof", required=True)
-ap.add_argument("--model", default=predict.DEFAULT_MODEL)
+ap.add_argument("--model", default="auto", help="auto = 품목별(배추·무 날씨 LightGBM, 저장품 기준가 유지)")
 ap.add_argument("--signals", default="data/agri_signals.csv")
 ap.add_argument("--data", default="data")
 ap.add_argument("--out-dir", default="output")
@@ -24,7 +24,8 @@ a = ap.parse_args()
 prices = loader.load_prices(a.data)
 sig_path = Path(a.signals)
 sig = news.load_signals(sig_path) if sig_path.exists() and a.model.endswith("_news") else None
-fc = predict.forecast(prices, a.asof, signals=sig, model=a.model)
+wx = weather.load_daily(a.data)
+fc = predict.forecast(prices, a.asof, signals=sig, model=a.model, weather=wx)
 inputs = sorted(Path(a.data).glob("*.csv")) + ([sig_path] if sig is not None else [])
 out, man = submission.write(fc, a.asof, a.model, inputs, Path(a.out_dir))
 full = submission.validate(fc)
