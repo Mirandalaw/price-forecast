@@ -1,0 +1,26 @@
+{
+  "asof": "2024-10-26",
+  "model": "blend",
+  "git": "5099fe4",
+  "python": "3.13.16",
+  "libs": {
+    "pandas": "3.0.5",
+    "numpy": "2.5.3",
+    "lightgbm": "4.7.0",
+    "sklearn": "1.9.1"
+  },
+  "inputs": {
+    "data/agri_signals.csv": "2a14896c5a2c0f04",
+    "data/at5_daily.csv": "1966ba98b58a3c26",
+    "data/at5_raw_2023.csv": "4b45c8f6157652f9",
+    "data/at5_raw_2024.csv": "946ca71cb42e13c8",
+    "data/at5_trading.csv": "63436028ed25c765",
+    "data/backtest_results.csv": "789e3339ef0525f8"
+  },
+  "output": {
+    "output/submission_2024-10-26.csv": "d3b85b71073c49de"
+  },
+  "n_rows": 60,
+  "n_flagged": 0,
+  "fallback_rows": 0
+}

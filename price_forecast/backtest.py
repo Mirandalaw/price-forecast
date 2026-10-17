@@ -4,15 +4,34 @@ import pandas as pd
 from . import features as F, models as M, news as N
 
 
+K_GRID = np.round(np.arange(0.90, 1.021, 0.01), 2)
+
+
+def mape_shrink_factor(pairs: list[tuple[float, float]]) -> float:
+    """(예측가, 실제가) 쌍들에서 MAPE 를 최소화하는 곱셈 계수 k ∈ K_GRID. 쌍이 없으면 1.0.
+
+    MAPE 는 실제가가 낮을 때 오차가 비싸므로 최적 k 는 보통 1보다 약간 작다 (기술서 1-1 ③ 안전장치의 한 형태).
+    """
+    if not pairs:
+        return 1.0
+    p = np.array([a for a, _ in pairs]); y = np.array([b for _, b in pairs])
+    return float(K_GRID[np.argmin([np.mean(np.abs(k * p - y) / y) for k in K_GRID])])
+
+
 def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HORIZONS,
         start="10-26", end="11-09", signals: pd.DataFrame | None = None) -> pd.DataFrame:
-    """signals 를 주면 'lgbm_news' / 'blend_news' 모델이 추가된다 (뉴스 on/off 비교)."""
+    """signals 를 주면 'lgbm_news' / 'blend_news' / 'blend_evt' 모델이 추가된다 (뉴스 on/off 비교).
+
+    'blend_k' = blend × 품목·h별 MAPE 수축 계수. 계수는 **앞선 평가 연도들의 out-of-sample 예측**으로만 고른다
+    (첫 해는 1.0). 연도 순서대로 돌기 때문에 미래 정보가 섞이지 않는다.
+    """
     feat = N.attach(F.build(prices), signals)
     use_news = signals is not None and not signals.empty
     rows = []
     for h in horizons:
         feat["drift"] = F.seasonal_drift(feat, h)
-        for yr in years:
+        history: dict[str, list[tuple[float, float]]] = {}   # item → [(blend 예측가, 실제가)] 앞선 연도분
+        for yr in sorted(years):
             cut = pd.Timestamp(f"{yr}-{start}")
             gap = pd.Timedelta(days=40 if isinstance(h, str) else h)      # 타깃이 평가 구간을 넘보지 않게 (순별은 3순 ≈ 30일 + 여유)
             train = feat[feat["date"] < cut - gap]
@@ -27,6 +46,10 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
                 adj = N.event_adjustment(test, signals, tab, h)
                 lo = train.groupby("item")[f"y{h}"].quantile(0.01); hi = train.groupby("item")[f"y{h}"].quantile(0.99)
                 pr["blend_evt"] = [float(np.clip(b + a, lo[it], hi[it])) for b, a, it in zip(pr["blend"], adj, pr["item"])]
+            pr["k"] = pr["item"].map(lambda it: mape_shrink_factor(history.get(it, [])))
+            pr["blend_k"] = pr["blend"] + np.log(pr["k"])
+            for it, g in pr.groupby("item"):
+                history.setdefault(it, []).extend(zip(g["price"] * np.exp(g["blend"]), g[f"p{h}"]))
             for mdl in [c for c in CANDIDATES if c in pr]:
                 pred_price = pr["price"] * np.exp(pr[mdl])
                 ape = (pred_price - pr[f"p{h}"]).abs() / pr[f"p{h}"]
@@ -35,7 +58,7 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
     return pd.DataFrame(rows)
 
 
-CANDIDATES = ("persist", "drift_m", "lgbm", "blend", "lgbm_news", "blend_news", "blend_evt")
+CANDIDATES = ("persist", "drift_m", "lgbm", "blend", "blend_k", "lgbm_news", "blend_news", "blend_evt")
 
 
 def add_selection(res: pd.DataFrame, min_years: int = 1) -> pd.DataFrame:
