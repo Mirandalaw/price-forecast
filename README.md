@@ -8,6 +8,8 @@ pip install -r requirements.txt
 # data/ 에 공공데이터포털 '주요 채소류 일일가격 현황' CSV(cp949)를 at5_raw_*.csv 로 넣는다
 python scripts/run_backtest.py                 # 2021~2024 본선 동기간(10/26~11/09) 워크포워드, h=1..10 + 2순·3순 후
 python scripts/predict.py --asof 2024-10-26    # 기준일 하나의 제출용 예측 → output/forecast_2024-10-26.csv
+python scripts/make_submission.py --asof 2024-10-26   # 회차 제출: 예측 → 검증(60행·NaN·±40% 클리핑) → submission_*.csv + manifest_*.json
+bash reproduce.sh 2024-10-26                  # 폐쇄망 재현: 고정 패키지(requirements-lock.txt) → 테스트 → 백테스트 → 제출 파일 + sha256
 ```
 
 ## 구조
@@ -16,7 +18,8 @@ python scripts/predict.py --asof 2024-10-26    # 기준일 하나의 제출용 �
 - `price_forecast/models.py`   persistence / drift / LightGBM(예측일별, L1 + 1/가격 가중) / blend(수축 + 품목별 1·99% 클리핑)
 - `price_forecast/sun.py`      순(旬) 정의·순 평균·2순/3순 후 타깃(ys2/ys3). 순 집계 방식이 바뀌면 `sun_mean()`만 교체
 - `price_forecast/predict.py`  기준일 하나 → 5품목 × (1~10거래일, s2, s3) 예측. 모델 실패 시 품목·h 단위로 persistence 폴백
-- `price_forecast/backtest.py` 연도별 워크포워드 + MAPE 리포트 + 품목·h별 모델 선택(`select`, 이전 연도 성적만 사용)
+- `price_forecast/backtest.py` 연도별 워크포워드 + MAPE 리포트 + 품목·h별 모델 선택(`select`) + MAPE 수축 계수(`blend_k`) — 둘 다 이전 연도 성적만 사용
+- `price_forecast/submission.py` 제출 파일 검증(완결성·범위 클리핑·flag)과 재현 매니페스트(입력 해시·버전·git)
 - `data/at5_trading.csv`       정리된 거래일 가격 (2019-10 ~ 2024-12)
 - `data/backtest_results.csv`  품목·연도·h·모델별 MAPE
 
@@ -53,10 +56,13 @@ python scripts/run_backtest.py
   반면 **공급 감소 사건**(폭염·태풍·김장 수요) 후에는 오히려 하락(이미 급등한 뒤 보도) → 역방향 신호. 즉 뉴스는 "대책이 나왔다 = 꼭지"를 알려주는 쪽이 유용하다.
 - 10/26~11/09 평가 구간은 계절 하락이 지배적이라 가격 피처만으로도 상당 부분 설명됨. 뉴스 효과는 9~10월 급등 국면에서 더 클 것으로 본다(미검증).
 
+### 시도했지만 기본 off 인 것
+- `blend_k` MAPE 수축 계수: 배추 10일 19.4→17.9 로 좋아지지만 무는 20.2→22.0 으로 나빠짐 (연도마다 국면이 달라 계수가 뒤집힘). 5품목 평균 9.1→9.3. 본선 회차가 쌓여 같은 해 자료로 튜닝할 수 있을 때 다시 본다.
+- `blend_evt` 이벤트 스터디 가산 보정: 위 뉴스 절 참조.
+
 ## 다음
 1. 반입량 피처 (본선 데이터셋 R01·R02) — 배추·무 10일 오차의 핵심
-2. MAPE 맞춤 수축 계수 (품목별, 과거 연도 튜닝)
-3. 주산지 날씨 피처 (ASOS)
+2. 주산지 날씨 피처 (ASOS)
 4. 2021~2024 가을 뉴스 소급 → `agri_signals.csv` → 뉴스 on/off 실측
 5. 2025 파일 추가 → 2025 fold
 6. 본선 데이터셋 로더(`load_auction`) + 제출 형식 맞춤 + `reproduce.sh`

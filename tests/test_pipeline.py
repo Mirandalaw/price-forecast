@@ -61,7 +61,7 @@ def test_lgbm_weights_and_clip(prices):
 
 def test_backtest_runs_and_beats_nothing_absurd(prices):
     res = backtest.run(prices, years=(2023, 2024), horizons=(1, 5))
-    assert set(res.model) == {"persist", "drift_m", "lgbm", "blend"}
+    assert set(res.model) == {"persist", "drift_m", "lgbm", "blend", "blend_k"}
     assert (res.mape >= 0).all() and (res.mape < 100).all()
     rep = backtest.report(res)
     assert "5품목 평균" in rep
@@ -141,3 +141,65 @@ def test_forecast_falls_back_to_persistence(prices, monkeypatch):
     fc = predict.forecast(prices, "2023-10-26", horizons=[3, "s2"])
     assert (fc["model"] == "persist(fallback)").all()
     assert np.allclose(fc["pred_price"], fc["base_price"])
+
+
+# ---------------------------------------------------------------------------
+# 재현성 · 누출 · 제출 검증
+# ---------------------------------------------------------------------------
+from price_forecast import submission  # noqa: E402
+
+
+def test_forecast_is_deterministic(prices):
+    a = predict.forecast(prices, "2023-10-26", horizons=[1, 10, "s2"])
+    b = predict.forecast(prices, "2023-10-26", horizons=[1, 10, "s2"])
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_forecast_ignores_prices_after_asof(prices):
+    """기준일 이후 가격을 아무렇게나 바꿔도 예측이 같아야 한다 (미래 정보 누출 없음)."""
+    asof = "2023-10-26"
+    tampered = prices.copy()
+    after = tampered["date"] > asof
+    tampered.loc[after, "price"] = tampered.loc[after, "price"] * 3.0
+    a = predict.forecast(prices, asof, horizons=[5, "s3"])
+    b = predict.forecast(tampered, asof, horizons=[5, "s3"])
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_submission_validate_clips_and_flags(prices):
+    fc = predict.forecast(prices, "2023-10-26")
+    assert len(fc) == submission.EXPECTED_ROWS
+    ok = submission.validate(fc)
+    assert (ok["flag"] == "").all()
+    # 한 행을 터무니없는 값으로 만들면 경계로 잘리고 flag 가 남는다
+    bad = fc.copy()
+    bad.loc[0, "pred_price"] = bad.loc[0, "base_price"] * 5
+    v = submission.validate(bad)
+    assert v.loc[0, "flag"].startswith("clipped_high") and np.isclose(v.loc[0, "pred_price"], bad.loc[0, "base_price"] * submission.HI)
+
+
+def test_submission_rejects_incomplete(prices):
+    fc = predict.forecast(prices, "2023-10-26")
+    with pytest.raises(submission.SubmissionError):
+        submission.validate(fc.iloc[:-1])
+    nan = fc.copy()
+    nan.loc[3, "pred_price"] = np.nan
+    with pytest.raises(submission.SubmissionError):
+        submission.validate(nan)
+
+
+def test_submission_write_creates_files(prices, tmp_path):
+    fc = predict.forecast(prices, "2023-10-26")
+    out, man = submission.write(fc, "2023-10-26", "blend", [], tmp_path)
+    assert out.exists() and man.exists()
+    got = pd.read_csv(out)
+    assert list(got.columns) == ["asof", "item", "horizon", "target", "pred_price"] and len(got) == submission.EXPECTED_ROWS
+
+
+def test_mape_shrink_factor_prefers_under_prediction():
+    # 실제가가 예측보다 자주 낮은 분포에서는 k < 1 이 선택된다
+    rng = np.random.default_rng(0)
+    pred = np.full(200, 100.0)
+    actual = 100.0 * np.exp(rng.normal(-0.08, 0.15, 200))
+    assert backtest.mape_shrink_factor(list(zip(pred, actual))) < 1.0
+    assert backtest.mape_shrink_factor([]) == 1.0
