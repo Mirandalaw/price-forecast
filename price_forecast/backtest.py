@@ -31,15 +31,21 @@ def run(prices: pd.DataFrame, years=(2021, 2022, 2023, 2024), horizons=F.ALL_HOR
     use_wx = weather is not None and not weather.empty
     rows = []
     for h in horizons:
-        feat["drift"] = F.seasonal_drift(feat, h)
         history: dict[str, list[tuple[float, float]]] = {}   # item → [(blend 예측가, 실제가)] 앞선 연도분
         for yr in sorted(years):
             cut = pd.Timestamp(f"{yr}-{start}")
             gap = pd.Timedelta(days=40 if isinstance(h, str) else h)      # 타깃이 평가 구간을 넘보지 않게 (순별은 3순 ≈ 30일 + 여유)
-            train = feat[feat["date"] < cut - gap]
-            test = feat[(feat["date"] >= cut) & (feat["date"] <= pd.Timestamp(f"{yr}-{end}"))].dropna(subset=[f"p{h}"])
+            train = feat[feat["date"] < cut - gap].copy()
+            test = feat[(feat["date"] >= cut) & (feat["date"] <= pd.Timestamp(f"{yr}-{end}"))].dropna(subset=[f"p{h}"]).copy()
             if test.empty:
                 continue
+            # seasonal drift 는 '학습 구간의 연도들'로만 만든다. 평가 행은 타깃을 지운 채 넣어 다른 연도 평균만 받는다
+            # (이전 구현은 전체 기간 leave-one-year-out 이라 뒤 연도 정보가 섞였다).
+            t2 = test.copy(); t2[f"y{h}"] = np.nan
+            tmp = pd.concat([train, t2])
+            tmp["drift"] = F.seasonal_drift(tmp, h)
+            train["drift"] = tmp.loc[train.index, "drift"]
+            test["drift"] = tmp.loc[test.index, "drift"]
             pr = M.predict_all(train, test, h)
             if use_news:
                 pn = M.predict_all(train, test, h, use_news=True)
