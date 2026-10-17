@@ -18,10 +18,10 @@ from . import features as F, models as M, news as N, sun, weather as W
 
 log = logging.getLogger(__name__)
 DEFAULT_MODEL = "blend"
-# model="auto": 품목별 모델 (2021~2024 백테스트 근거, README '품목별 운용')
-#   배추·무 = 날씨 피처 LightGBM (10일 앞 무 19.9→18.3%) / 저장품 = 기준가 유지 (모델이 오히려 악화)
-#   날씨 자료가 없으면 배추·무는 blend 로 내려간다.
-ITEM_MODEL = {"배추": "lgbm_wx", "무": "lgbm_wx", "양파": "persist", "깐마늘": "persist", "건고추": "persist"}
+# model="auto": 품목별 모델 (README '품목별 운용'. 2017~2024 8개년 시장별 자료 + 2021~2024 at5 자료 백테스트 근거)
+#   배추·무 = 뉴스 피처 LightGBM (10일 앞 8개년: 배추 16.8→15.0%, 무 14.2→12.4%) / 저장품 = 기준가 유지 (모델이 오히려 악화)
+#   뉴스 신호가 없으면 배추·무는 가격 피처만의 lgbm 으로 내려간다. (날씨 lgbm_wx 는 drift 누수 제거 후 이득이 사라져 제외)
+ITEM_MODEL = {"배추": "lgbm_news", "무": "lgbm_news", "양파": "persist", "깐마늘": "persist", "건고추": "persist"}
 
 
 def _target_date(asof: pd.Timestamp, h: int) -> pd.Timestamp:
@@ -43,10 +43,17 @@ def forecast(prices: pd.DataFrame, asof: str | pd.Timestamp, signals: pd.DataFra
         raise ValueError(f"{asof.date()} 이전 가격 자료가 없음")
     wx = weather[weather["date"] <= asof] if weather is not None else None
     feat = W.attach(N.attach(F.build(hist), signals), wx)
-    use_news = signals is not None and not signals.empty and model.endswith("_news")
+    has_news = signals is not None and not signals.empty
+    use_news = has_news and model.endswith("_news")
     has_wx = wx is not None and not wx.empty
     if model == "auto":
-        per_item = {i: (m if (m != "lgbm_wx" or has_wx) else "blend") for i, m in ITEM_MODEL.items()}
+        def _fallback(m):
+            if m == "lgbm_wx" and not has_wx:
+                return "blend"
+            if m == "lgbm_news" and not has_news:
+                return "lgbm"
+            return m
+        per_item = {i: _fallback(m) for i, m in ITEM_MODEL.items()}
     else:
         per_item = None
     base_model = model.replace("_news", "")
@@ -61,8 +68,16 @@ def forecast(prices: pd.DataFrame, asof: str | pd.Timestamp, signals: pd.DataFra
         try:
             if per_item is not None:
                 pr = M.predict_all(train, cur, h).set_index("item")
-                prw = M.predict_all(train, cur, h, use_wx=True).set_index("item") if has_wx else pr
-                pick = {i: (prw["lgbm"][i] if m == "lgbm_wx" else pr[m][i]) for i, m in per_item.items() if i in pr.index}
+                need = set(per_item.values())
+                prw = M.predict_all(train, cur, h, use_wx=True).set_index("item") if "lgbm_wx" in need else pr
+                prn = M.predict_all(train, cur, h, use_news=True).set_index("item") if "lgbm_news" in need else pr
+                src = {"lgbm_wx": (prw, "lgbm"), "lgbm_news": (prn, "lgbm")}
+                pick = {}
+                for i, m in per_item.items():
+                    if i not in pr.index:
+                        continue
+                    tab, col = src.get(m, (pr, m))
+                    pick[i] = tab[col][i]
                 yhat = pd.Series(pick)
                 used = {i: f"auto:{per_item[i]}" for i in yhat.index}
             else:
