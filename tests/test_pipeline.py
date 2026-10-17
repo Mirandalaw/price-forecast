@@ -203,3 +203,22 @@ def test_mape_shrink_factor_prefers_under_prediction():
     actual = 100.0 * np.exp(rng.normal(-0.08, 0.15, 200))
     assert backtest.mape_shrink_factor(list(zip(pred, actual))) < 1.0
     assert backtest.mape_shrink_factor([]) == 1.0
+
+
+def test_weather_daily_and_features(tmp_path):
+    from price_forecast import weather as W
+
+    rows = []
+    for d in pd.date_range("2023-10-01 01:00", "2023-10-21 00:00", freq="h"):
+        for stn, name in [(100, "대관령"), (261, "해남"), (278, "의성")]:
+            rows.append({"지점": stn, "지점명": name, "일시": d.strftime("%Y-%m-%d %H:%M"), "기온(°C)": -1.0 if d.hour == 5 else 10.0,
+                         "강수량(mm)": 1.0 if d.hour == 12 else np.nan, "풍속(m/s)": 3.0, "일조(hr)": 0.5,
+                         "지면온도(°C)": -2.0 if d.hour == 5 else 8.0})
+    p = tmp_path / "OBS_ASOS_TIM_x.csv"
+    pd.DataFrame(rows).to_csv(p, index=False, encoding="cp949")
+    daily = W.daily_from_hourly([p])
+    one = daily[(daily.stn == 261) & (daily.date == "2023-10-05")].iloc[0]
+    assert one.tmin == -1.0 and one.rain == 1.0 and one.gmin == -2.0
+    f = W.item_features(daily, ["배추", "건고추"])
+    last = f[(f.item == "배추") & (f.date == "2023-10-15")].iloc[0]
+    assert last.wx_rain7 == 7.0 and last.wx_frost7 == 7.0 and np.isnan(W.attach(pd.DataFrame({"item": ["무"], "date": [pd.Timestamp("2020-01-01")]}), daily)["wx_t7"].iloc[0])
